@@ -67,6 +67,10 @@ class GaussianPointCloudScene(torch.nn.Module):
         )
         if config.max_num_points_ratio is not None:
             self.point_invalid_mask[num_points:] = 1
+            
+        # Extra lines for Sugar regularization term
+        self.beta_mode = 'average'
+        self.scale_activation = torch.exp
 
     def forward(self):
         return self.point_cloud, self.point_cloud_features
@@ -237,3 +241,17 @@ class GaussianPointCloudScene(torch.nn.Module):
             columns += ["r", "g", "b"]
         scene_df = pd.concat([scene_df, pd.DataFrame(points, columns=columns)])
         return scene_df
+
+    # Extra functions for SuGaR regularization
+    def scaling(self):
+        _scales = self.point_cloud_features[:, 4:7]
+        scales = self.scale_activation(_scales)
+        return scales
+    
+    def get_beta(self, x, 
+                 closest_gaussians_idx=None, 
+                 ):
+        if self.beta_mode == 'average':
+            if closest_gaussians_idx is None:
+                raise ValueError("closest_gaussians_idx must be provided when using beta_mode='average'.")
+            return self.scaling.min(dim=-1)[0][closest_gaussians_idx].mean(dim=1)
