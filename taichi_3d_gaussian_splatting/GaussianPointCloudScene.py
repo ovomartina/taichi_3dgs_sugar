@@ -255,3 +255,20 @@ class GaussianPointCloudScene(torch.nn.Module):
             if closest_gaussians_idx is None:
                 raise ValueError("closest_gaussians_idx must be provided when using beta_mode='average'.")
             return self.scaling.min(dim=-1)[0][closest_gaussians_idx].mean(dim=1)
+    
+    def get_points_depth_in_depth_map(self, fov_camera, depth, points_in_camera_space):
+        depth_view = depth.unsqueeze(0).unsqueeze(-1).permute(0, 3, 1, 2)
+        pts_projections = fov_camera.get_projection_transform().transform_points(points_in_camera_space)
+
+        factor = -1 * min(self.image_height, self.image_width)
+        # todo: Parallelize these two lines with a tensor [image_width, image_height]
+        pts_projections[..., 0] = factor / self.image_width * pts_projections[..., 0]
+        pts_projections[..., 1] = factor / self.image_height * pts_projections[..., 1]
+        pts_projections = pts_projections[..., :2].view(1, -1, 1, 2)
+
+        map_z = torch.nn.functional.grid_sample(input=depth_view,
+                                                grid=pts_projections,
+                                                mode='bilinear',
+                                                padding_mode='border'  # 'reflection', 'zeros'
+                                                )[0, 0, :, 0]
+        return map_z

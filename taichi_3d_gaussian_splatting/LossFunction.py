@@ -48,6 +48,8 @@ class LossFunction(nn.Module):
         s = pointcloud_features[point_invalid_mask == 0, 4:7]
         exp_s = torch.exp(s)
         regularization_loss = torch.norm(exp_s, dim=1).mean()
+        
+        
         return regularization_loss
         
         

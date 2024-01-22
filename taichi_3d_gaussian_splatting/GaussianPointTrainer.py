@@ -4,6 +4,8 @@ from .ImagePoseDataset import ImagePoseDataset
 from .Camera import CameraInfo
 from .GaussianPointCloudRasterisation import GaussianPointCloudRasterisation
 from .GaussianPointAdaptiveController import GaussianPointAdaptiveController
+from .GaussianPoint3D import GaussianPoint3D, project_point_to_camera, rotation_matrix_from_quaternion, transform_matrix_from_quaternion_and_translation
+
 from .LossFunction import LossFunction
 import torch
 import argparse
@@ -21,6 +23,8 @@ from matplotlib import cm
 from collections import deque
 import numpy as np
 from typing import Optional
+
+from .utils import inverse_SE3_qt_torch
 
 
 def cycle(dataloader):
@@ -173,6 +177,90 @@ class GaussianPointCloudTrainer:
                 image_gt, 
                 point_invalid_mask=self.scene.point_invalid_mask,
                 pointcloud_features=self.scene.point_cloud_features)
+            
+            # add SuGaR regularization term to the loss #######################################################################
+            sdf_estimation_factor = 0.2
+            n_samples_for_sdf_regularization = 1_000_000
+            sdf_sampling_scale_factor = 1.5
+            sdf_sampling_proportional_to_volume = False
+            close_gaussian_threshold = 2.  # 2.
+            
+            # Get gaussians indices
+            print("self.pointcloud.shape: ", self.pointcloud.shape)
+            point_id = torch.arange(
+                self.pointcloud.shape[0], dtype=torch.int32, device=self.pointcloud.device)
+            q_camera_pointcloud, t_camera_pointcloud = inverse_SE3_qt_torch(
+                q=q_pointcloud_camera, t=t_pointcloud_camera)
+            
+            point_xyz = ti.Vector(
+                [self.pointcloud[point_id, 0], self.pointcloud[point_id, 1], self.pointcloud[point_id, 2]])
+            point_q_camera_pointcloud = ti.Vector(
+                [q_camera_pointcloud])
+            point_t_camera_pointcloud = ti.Vector(
+                [t_camera_pointcloud])
+                
+            T_camera_pointcloud_mat = transform_matrix_from_quaternion_and_translation(
+                q=point_q_camera_pointcloud,
+                t=point_t_camera_pointcloud,
+            )
+            _, point_in_camera = project_point_to_camera(
+                translation=point_xyz,
+                T_camera_world=T_camera_pointcloud_mat,
+                projective_transform=camera_info.camera_intrinsics
+            )
+            
+            print("point_in_camera shape:", point_in_camera.shape)
+            
+            gaussian_centers_z = point_in_camera[..., 2] + 0.
+            
+            
+            _, depth, _ = self.rasterisation(gaussian_point_cloud_rasterisation_input)
+                                        
+            # gaussians_close_to_surface = (gaussian_centers_map_z - gaussian_centers_z).abs() < close_gaussian_threshold * gaussian_standard_deviations
+            # sampling_mask = sampling_mask * gaussians_close_to_surface
+                                        
+            # n_gaussians_in_sampling = sampling_mask.sum()
+            
+            # sdf_samples, sdf_gaussian_idx = GaussianPointCloudScene.sample_points_in_gaussians(
+            #                             num_samples=n_samples_for_sdf_regularization, 
+            #                             sampling_scale_factor=sdf_sampling_scale_factor,
+            #                             mask=sampling_mask,
+            #                             probabilities_proportional_to_volume=sdf_sampling_proportional_to_volume,
+            #                             )
+
+            # # GaussianPoint3D just describes one gaussian... I need all sdf samples. I'll write custom function           
+            # sdf_samples_in_camera_space = T * intrinsics * sdf_samples 
+            # sdf_samples_z = sdf_samples_in_camera_space[..., 2] + 0.
+            # proj_mask = sdf_samples_z > self.rasterisation.near_plane
+            # sdf_samples_map_z = GaussianPointCloudScene.get_points_depth_in_depth_map(fov_camera, depth, sdf_samples_in_camera_space[proj_mask])
+            
+            # ###################
+            # depth_view = depth.unsqueeze(0).unsqueeze(-1).permute(0, 3, 1, 2)
+            # pts_projections = T * intrinsics * points_in_camera_space
+
+            # factor = -1 * min(self.image_height, self.image_width)
+            # pts_projections[..., 0] = factor / self.image_width * pts_projections[..., 0]
+            # pts_projections[..., 1] = factor / self.image_height * pts_projections[..., 1]
+            # pts_projections = pts_projections[..., :2].view(1, -1, 1, 2)
+
+            # map_z = torch.nn.functional.grid_sample(input=depth_view,
+            #                                         grid=pts_projections,
+            #                                         mode='bilinear',
+            #                                         padding_mode='border'  # 'reflection', 'zeros'
+            #                                         )[0, 0, :, 0]
+            # ############################
+            
+            # sdf_estimation = sdf_samples_map_z - sdf_samples_z[proj_mask]
+            
+            # # Implementing density loss
+            # beta = fields['beta'][proj_mask]
+            # densities = fields['density'][proj_mask]
+            # target_densities = torch.exp(-0.5 * sdf_estimation.pow(2) / beta.pow(2))
+            # sdf_estimation_loss = (densities - target_densities).abs()
+            
+            # loss = loss + sdf_estimation_factor * sdf_estimation_loss.mean()
+            ###################################################################################################################
+            
             loss.backward()
             optimizer.step()
             position_optimizer.step()
